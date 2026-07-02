@@ -1,0 +1,502 @@
+// Life OS — Prisma schema
+// Postgres with pgvector for AI semantic memory.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector, pgcrypto]
+}
+
+// ─────────────────────────────────────────────────────────────
+// USER + AUTH — email/password and Google sign-in via Auth.js.
+// `Account`/`Session`/`VerificationToken` are the fixed shape the
+// Prisma adapter expects (https://authjs.dev/reference/adapter/prisma).
+// Sessions use the JWT strategy (required alongside a Credentials
+// provider), so `Session` rows are unused today but kept for adapter
+// compatibility and in case a provider needing DB sessions is added later.
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String?   @unique
+  emailVerified DateTime?
+  /// Null for accounts created via an OAuth provider only.
+  passwordHash  String?
+  name          String?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  onboardedAt DateTime?
+  timezone    String    @default("Asia/Kolkata")
+  locale      String    @default("en")
+
+  /// E.164 number rung two minutes before a calendar event starts. Null until
+  /// one is saved on the Today page; the reminder job skips users without one.
+  phone         String?
+  /// Off-switch for the reminder calls that keeps the saved number. A phone
+  /// call is intrusive enough that muting it must not cost you the number.
+  callReminders Boolean @default(true)
+
+  accounts Account[]
+  sessions Session[]
+
+  tasks               Task[]
+  goals               Goal[]
+  notes               Note[]
+  noteImages          NoteImage[]
+  events              CalendarEvent[]
+  conversations       Conversation[]
+  memories            Memory[]
+  calendarAccounts    CalendarAccount[]
+  notifications       Notification[]
+  briefings           DailyBriefing[]
+
+  @@index([email])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─────────────────────────────────────────────────────────────
+// TASKS — the atomic unit of work
+// ─────────────────────────────────────────────────────────────
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+  CANCELLED
+  SNOOZED
+}
+
+enum Category {
+  WORK
+  PERSONAL
+  HEALTH
+  LEARNING
+  FINANCE
+  SOCIAL
+  HOME
+  OTHER
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  userId      String
+  title       String
+  description String?    @db.Text // markdown
+  status      TaskStatus @default(TODO)
+  priority    Priority   @default(MEDIUM)
+  category    Category   @default(OTHER)
+
+  // Scheduling
+  dueAt       DateTime?
+  startAt     DateTime?
+  durationMin Int?
+  remindAt    DateTime?
+
+  // Recurrence — RFC 5545 RRULE string
+  rrule              String?
+  recurrenceParentId String?
+  recurrenceParent   Task?   @relation("RecurrenceChildren", fields: [recurrenceParentId], references: [id], onDelete: SetNull)
+  recurrenceChildren Task[]  @relation("RecurrenceChildren")
+
+  // Hierarchy
+  parentId String?
+  parent   Task?   @relation("Subtasks", fields: [parentId], references: [id], onDelete: Cascade)
+  subtasks Task[]  @relation("Subtasks")
+
+  // Relations
+  goalId      String?
+  goal        Goal?      @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  milestoneId String?
+  milestone   Milestone? @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+
+  // Provenance — how was this created
+  source    TaskSource @default(MANUAL)
+  sourceRef String? // e.g. message id, transcription id
+
+  // Sync — Google Calendar
+  externalId        String? // google calendar event id, if synced
+  calendarAccountId String?
+  calendarAccount   CalendarAccount? @relation(name: "TaskSyncedAccount", fields: [calendarAccountId], references: [id], onDelete: SetNull)
+  /// When this task was last pushed to (or reconciled with) the provider.
+  /// Two-way sync compares it against `updatedAt` here and `updated` on the
+  /// remote event to decide which side changed since the last agreement.
+  syncedAt          DateTime?
+
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([userId, dueAt])
+  @@index([goalId])
+  @@index([milestoneId])
+}
+
+enum TaskSource {
+  MANUAL
+  CHAT
+  VOICE
+  GOAL_PLAN
+  CALENDAR_SYNC
+  BRIEFING
+}
+
+// ─────────────────────────────────────────────────────────────
+// GOALS & MILESTONES
+// ─────────────────────────────────────────────────────────────
+
+enum GoalStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  ABANDONED
+}
+
+model Goal {
+  id          String     @id @default(cuid())
+  userId      String
+  title       String
+  description String?    @db.Text
+  category    Category   @default(OTHER)
+  status      GoalStatus @default(ACTIVE)
+
+  startDate  DateTime?
+  targetDate DateTime?
+
+  // Computed by the planner
+  progressPct Int @default(0)
+
+  // AI plan metadata
+  planVersion   Int     @default(1)
+  planRationale String? @db.Text // why the AI structured it this way
+
+  milestones Milestone[]
+  tasks      Task[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+}
+
+enum MilestoneStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+}
+
+model Milestone {
+  id          String          @id @default(cuid())
+  goalId      String
+  title       String
+  description String?         @db.Text
+  status      MilestoneStatus @default(PENDING)
+  orderIdx    Int             @default(0)
+  targetDate  DateTime?
+  completedAt DateTime?
+
+  tasks Task[]
+
+  goal Goal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId, orderIdx])
+}
+
+// ─────────────────────────────────────────────────────────────
+// NOTES — TipTap markdown + AI summaries + backlinks
+// ─────────────────────────────────────────────────────────────
+
+model Note {
+  id      String   @id @default(cuid())
+  userId  String
+  title   String
+  content String   @db.Text // HTML (BlockNote serializes to/from HTML)
+  excerpt String?  @db.Text // AI-generated summary
+  tags    String[] @default([])
+  pinned  Boolean  @default(false)
+
+  // Backlinks (graph edges in junction table below)
+  outgoingLinks NoteLink[] @relation("FromNote")
+  incomingLinks NoteLink[] @relation("ToNote")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+  @@index([userId, tags])
+}
+
+model NoteImage {
+  id        String   @id @default(cuid())
+  userId    String
+  mimeType  String
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model NoteLink {
+  id     String @id @default(cuid())
+  fromId String
+  toId   String
+
+  from Note @relation("FromNote", fields: [fromId], references: [id], onDelete: Cascade)
+  to   Note @relation("ToNote", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CALENDAR — internal events + external account sync
+// ─────────────────────────────────────────────────────────────
+
+enum CalendarProvider {
+  GOOGLE
+  OUTLOOK
+}
+
+model CalendarAccount {
+  id           String           @id @default(cuid())
+  userId       String
+  provider     CalendarProvider
+  email        String
+  accessToken  String           @db.Text
+  /// Null for a browser-granted session token: Google only issues refresh
+  /// tokens to the authorization-code flow, which needs a client secret. Such
+  /// an account works until `expiresAt` and then needs re-consent rather than
+  /// a silent refresh.
+  refreshToken String?          @db.Text
+  expiresAt    DateTime
+  scope        String           @db.Text
+
+  // Calendar-level metadata
+  calendarId String? // primary calendar id from provider
+  syncToken  String? @db.Text // incremental sync cursor
+
+  lastSyncedAt DateTime?
+  isActive     Boolean   @default(true)
+
+  events         Task[]          @relation(name: "TaskSyncedAccount")
+  calendarEvents CalendarEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider, email])
+  @@index([userId])
+}
+
+model CalendarEvent {
+  id          String    @id @default(cuid())
+  userId      String
+  /// Null for a locally-created event with no synced calendar to push to.
+  accountId   String?
+  /// Google/Outlook event id once pushed; null until then.
+  externalId  String?
+  title       String
+  description String?   @db.Text
+  location    String?
+  startAt     DateTime
+  endAt       DateTime
+  allDay      Boolean   @default(false)
+  attendees   String[]  @default([])
+  rrule       String?
+  /// Last point the local row and remote event agreed. Same role as
+  /// `Task.syncedAt` — drives conflict resolution on pull and skip-if-unchanged
+  /// on push. Null means "never synced" (pure local, or a first-time mirror).
+  syncedAt    DateTime?
+  /// Set when this row mirrors a Google Task rather than a Calendar event —
+  /// `externalId` is then the task id within this list. Google Tasks are a
+  /// separate API (tasks.googleapis.com) from Calendar Events, so sync code
+  /// branches on this field to pick which API to call.
+  googleTaskListId String?
+  /// True when this row was created by a pull, mirroring something that already
+  /// existed at the provider; false when it originated in Life OS.
+  ///
+  /// Provenance has to be its own column because no other field carries it.
+  /// `syncedAt` cannot: it is set the moment a mirror is first pulled in, so
+  /// reading a non-null `syncedAt` as "the user owns this" reports *every*
+  /// mirror as locally owned. That is what made a remotely cancelled event
+  /// unlink instead of delete, leaving a ghost row on the calendar.
+  ///
+  /// Cleared when a row is unlinked from its account: with nothing left to
+  /// mirror, it is the user's own local event from then on.
+  mirrored Boolean @default(false)
+  /// The `startAt` a reminder call was already placed for. Dedupes the
+  /// once-a-minute reminder sweep, and — because it stores the time rather than
+  /// a bare flag — a rescheduled event earns a fresh call automatically.
+  reminderCalledFor DateTime?
+
+  account CalendarAccount? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([accountId, externalId])
+  @@index([userId, startAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// AI: CONVERSATIONS + MESSAGES + SEMANTIC MEMORY
+// ─────────────────────────────────────────────────────────────
+
+model Conversation {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages Message[]
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String      @db.Text
+  toolName       String? // when role = TOOL
+  toolPayload    Json?
+  createdAt      DateTime    @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+/// Semantic memory — every meaningful event (task created, goal set, fact about user)
+/// is embedded so the assistant can recall context across sessions.
+model Memory {
+  id        String                      @id @default(cuid())
+  userId    String
+  kind      String // "task", "goal", "note", "preference", "fact"
+  refId     String? // pointer to source entity, if any
+  content   String                      @db.Text
+  // pgvector — 768 dims for nomic-embed-text; adjust per model
+  embedding Unsupported("vector(768)")?
+  createdAt DateTime                    @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind])
+}
+
+// ─────────────────────────────────────────────────────────────
+// NOTIFICATIONS + BRIEFINGS
+// ─────────────────────────────────────────────────────────────
+
+enum NotificationType {
+  TASK_DUE
+  TASK_OVERDUE
+  GOAL_NUDGE
+  BRIEFING_READY
+  CONFLICT
+  SUGGESTION
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  body      String?          @db.Text
+  actionUrl String?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+}
+
+model DailyBriefing {
+  id            String   @id @default(cuid())
+  userId        String
+  forDate       DateTime @db.Date
+  summary       String   @db.Text
+  focusAreas    String[] @default([])
+  overdueCount  Int      @default(0)
+  upcomingCount Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, forDate])
+  @@index([userId, forDate])
+}
