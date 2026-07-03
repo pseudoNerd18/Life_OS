@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ─── Warm paper-white light theme ─── */
+    --background: 40 22% 98%;          /* warm white */
+    --foreground: 30 8% 14%;           /* charcoal */
+
+    --card: 0 0% 100%;
+    --card-foreground: 30 8% 14%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 30 8% 14%;
+
+    --primary: 30 8% 14%;              /* charcoal as primary */
+    --primary-foreground: 40 22% 98%;
+
+    --secondary: 35 14% 94%;           /* soft beige */
+    --secondary-foreground: 30 8% 14%;
+
+    --muted: 35 14% 94%;
+    --muted-foreground: 30 5% 45%;
+
+    --accent: 35 18% 92%;
+    --accent-foreground: 30 8% 14%;
+
+    --destructive: 5 65% 50%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 30 8% 90%;
+    --input: 30 8% 92%;
+    --ring: 30 8% 30%;
+
+    --priority-low: 200 18% 60%;
+    --priority-med: 35 70% 55%;
+    --priority-high: 5 65% 55%;
+
+    --radius: 0.75rem;
+  }
+
+  .dark {
+    /* ─── Muted graphite dark theme (not pure black) ─── */
+    --background: 30 5% 9%;
+    --foreground: 35 8% 92%;
+
+    --card: 30 5% 11%;
+    --card-foreground: 35 8% 92%;
+
+    --popover: 30 5% 11%;
+    --popover-foreground: 35 8% 92%;
+
+    --primary: 35 8% 92%;
+    --primary-foreground: 30 5% 9%;
+
+    --secondary: 30 4% 16%;
+    --secondary-foreground: 35 8% 92%;
+
+    --muted: 30 4% 16%;
+    --muted-foreground: 30 5% 60%;
+
+    --accent: 30 4% 18%;
+    --accent-foreground: 35 8% 92%;
+
+    --destructive: 5 55% 50%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 30 4% 18%;
+    --input: 30 4% 18%;
+    --ring: 35 8% 70%;
+
+    --priority-low: 200 14% 55%;
+    --priority-med: 35 55% 60%;
+    --priority-high: 5 55% 60%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html { font-feature-settings: "ss01", "cv01", "cv11"; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans), system-ui, sans-serif;
+    text-rendering: optimizeLegibility;
+  }
+  /* Tighter line-heights for headings */
+  h1, h2, h3, h4 { font-feature-settings: "ss01"; letter-spacing: -0.015em; }
+  /* Display serif for landing + selective accents */
+  .font-display { font-family: var(--font-instrument-serif), Georgia, serif; }
+  /* Selection color */
+  ::selection { background: hsl(var(--foreground) / 0.12); }
+}
+
+@layer components {
+  /* Subtle card surface used across the app */
+  .surface {
+    @apply rounded-xl border border-border bg-card text-card-foreground;
+  }
+  .surface-soft {
+    @apply rounded-xl bg-secondary/40;
+  }
+  /* The "thin" divider used in lists */
+  .hairline { @apply h-px w-full bg-border; }
+  /* Quiet button used everywhere — Notion-like */
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm
+      text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground;
+  }
+  /* Grain overlay for landing background depth */
+  .grain::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    mix-blend-mode: multiply;
+  }
+}
