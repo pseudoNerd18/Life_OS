@@ -1,0 +1,61 @@
+/*
+ * Bridge BlockNote's theme variables onto the Life OS design tokens
+ * (globals.css). Our tokens already flip with next-themes, so both schemes get
+ * the same rules and there is no second palette to maintain.
+ *
+ * Specificity note: BlockNote defines these on `.bn-root` (0,1,0) and
+ * `.bn-root[data-color-scheme=dark]` (0,2,0). The class is repeated below to
+ * reach 0,2,0 / 0,3,0 and win in *both* schemes — a single `.bn-root` rule
+ * would silently lose in dark mode. `.bn-root` (rather than `.bn-container`)
+ * is used so the portalled popups — slash menu, formatting toolbar — are
+ * themed too, not just the editor surface.
+ */
+.bn-root.bn-root,
+.bn-root.bn-root[data-color-scheme="dark"] {
+  --bn-colors-editor-background: transparent;
+  --bn-colors-editor-text: hsl(var(--foreground));
+  --bn-colors-menu-background: hsl(var(--card));
+  --bn-colors-menu-text: hsl(var(--card-foreground));
+  --bn-colors-tooltip-background: hsl(var(--secondary));
+  --bn-colors-tooltip-text: hsl(var(--secondary-foreground));
+  --bn-colors-hovered-background: hsl(var(--accent));
+  --bn-colors-hovered-text: hsl(var(--accent-foreground));
+  --bn-colors-selected-background: hsl(var(--secondary));
+  --bn-colors-selected-text: hsl(var(--secondary-foreground));
+  --bn-colors-disabled-background: hsl(var(--muted));
+  --bn-colors-disabled-text: hsl(var(--muted-foreground));
+  --bn-colors-border: hsl(var(--border));
+  --bn-colors-side-menu: hsl(var(--muted-foreground));
+  --bn-border-radius: var(--radius);
+  --bn-font-family: inherit;
+}
+
+.bn-container {
+  font-size: 0.9375rem;
+}
+
+/* The page already provides the writing gutter; drop BlockNote's own padding. */
+.bn-container .bn-editor {
+  padding-inline: 0;
+}
+
+/*
+ * Fill the note pane rather than shrink-wrapping the content. A short note
+ * otherwise leaves most of the visible area as wrapper padding instead of
+ * the editor's own DOM — outside that box, clicking doesn't focus the editor
+ * and file drops silently no-op (BlockNote resolves drop position against its
+ * own content, not the page).
+ */
+.bn-container,
+.bn-container .bn-editor {
+  min-height: 60vh;
+}
+
+/* Match the display serif used for note titles and page headings. */
+.bn-container h1,
+.bn-container h2,
+.bn-container h3 {
+  font-family: var(--font-instrument-serif), Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+}
