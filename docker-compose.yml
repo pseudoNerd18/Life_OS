@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lifeos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lifeos
+      POSTGRES_PASSWORD: lifeos
+      POSTGRES_DB: lifeos
+    ports:
+      - "5432:5432"
+    volumes:
+      - lifeos_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lifeos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: lifeos-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - lifeos_ollama:/root/.ollama
+    # GPU users: uncomment the deploy block
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  whisper:
+    image: fedirz/faster-whisper-server:latest-cpu
+    container_name: lifeos-whisper
+    restart: unless-stopped
+    environment:
+      - WHISPER__MODEL=Systran/faster-whisper-small
+      - WHISPER__INFERENCE_DEVICE=cpu
+    ports:
+      - "9000:8000"
+    volumes:
+      - lifeos_whisper:/root/.cache/huggingface
+
+volumes:
+  lifeos_pg:
+  lifeos_ollama:
+  lifeos_whisper:
