@@ -1,5 +1,127 @@
 # Life OS — changes
 
+## v0.5 — accounts, calendar and the telephone
+
+Three subsystems landed in this release and none of them were written up at the
+time. This entry closes that gap. The defect found while validating the third of
+them has its own entry immediately below.
+
+### Sign-in came back — without a client secret
+
+v0.2 removed Auth.js entirely because the v5 beta and Next 15 disagreed about
+`headers()` and `cookies()`. Guest-by-cookie replaced it, and §9 of ARCHITECTURE
+was rewritten to say honestly that whoever held a `lifeos_uid` cookie *was* that
+user, with no revocation.
+
+That is not a thing to submit, so identity came back — but deliberately not as
+Google's OAuth provider, which needs a client secret on disk. Both routes in are
+modelled as Auth.js Credentials providers:
+
+- **Google**, via Identity Services. The browser gets a signed ID token;
+  `lib/auth/google-id-token.ts` verifies it against Google's published keys,
+  checking signature, issuer, audience, expiry and nonce, and refusing
+  unverified email addresses. A client ID is public by design.
+- **Email and password**, bcrypt at cost 12, with `/api/auth/signup` supplying
+  the registration endpoint Auth.js does not have for credentials.
+
+Consequence worth knowing: an ID token is proof of identity, not an API grant.
+It cannot be exchanged for calendar access, which is why that is a separate
+consent — see below.
+
+Every `authorize()` returns `null` rather than throwing, so a bad password, a
+missing account and an OAuth-only account are indistinguishable to the caller.
+Google sign-in matches on the verified email, so it lands on an existing
+password account rather than forking a second one.
+
+`middleware.ts` went from priming a cookie to being the gate: everything except
+`/`, `/login`, `/signup`, `/api/auth/*` and the signed `/api/calls/twiml`
+requires a session. `lib/session.ts` now throws instead of minting a guest — with
+the gate in place, a missing session is a bug in the gate.
+
+**Known cost:** `scripts/smoke.mjs` predates all of this and does not sign in, so
+its checks now return 401. Recorded as DEF-02. They are harness failures, not
+product defects, and incidentally evidence that the gate works.
+
+### Google Calendar, and Google Tasks
+
+Two-way sync against Calendar v3 and Tasks v1, over plain `fetch` — no
+`googleapis` dependency. Every base URL is indirected through one environment
+variable, which is the seam that lets the integration harness point the
+*unmodified* engine at `scripts/mock-google.ts`.
+
+Two ways to connect, because they cost different things:
+
+- **Authorization code** needs the client secret and yields a refresh token, so
+  sync lasts. The callback refuses to create an account when Google returns no
+  refresh token, rather than creating one that dies silently in an hour.
+- **Browser-granted session** needs no secret. The access token is opaque, so
+  every property is read back from Google's tokeninfo endpoint and the audience
+  is checked against our client ID to block token substitution. Stored with a
+  null refresh token, which is the schema's marker for "session only".
+
+`pull → pullTasks → push → reap`, in that order, so that conflicts and unlinks
+discovered remotely are known before push consults them — otherwise push
+immediately undoes a deletion observed seconds earlier in the same run.
+`decide()` in `reconcile.ts` is a pure function and unit-tested away from any
+network; both sides changing is a *reported* conflict, not a silent resolution.
+
+Two details that are not obvious:
+
+- **Echo suppression.** Every pushed event carries a private marker naming its
+  originating task. On the way back a marked event updates the task and never
+  becomes a second `CalendarEvent`. Without it, a pushed task appears on the
+  calendar twice.
+- **`markSynced` uses raw SQL.** `SET "syncedAt" = "updatedAt"` through Prisma's
+  `update()` would fire `@updatedAt` and push `updatedAt` past `syncedAt` in the
+  same statement, making every synced row look permanently dirty.
+
+### The phone rings
+
+Two minutes before a calendar event starts, an outbound Twilio call speaks its
+name. The sweep runs on an interval in the server process — for a single-instance
+self-hosted deployment that is the honest fit, and a global singleton stops Next's
+hot reload stacking one timer per reload.
+
+Each event is **claimed before it is dialled**, with a compare-and-swap on
+`reminderCalledFor`; a concurrent sweep sees zero rows affected and backs off.
+Storing the start time rather than a boolean is what lets a rescheduled event
+earn a fresh call automatically. A dial failure leaves the claim standing: a
+reminder is worthless a minute late.
+
+Three things cost real time to find:
+
+- **A TwiML Bin cannot carry the message.** Twilio rewrites the URL before
+  fetching it and decodes percent-escapes on the way, so `%26` arrives as a bare
+  `&` and truncates the parameter mid-sentence. Every event named
+  "Design & Review" failed — and it looked like an unreachable server. The route
+  packs the message as base64url, whose alphabet has nothing a query-string
+  parser can corrupt.
+- **The endpoint has to be public**, because Twilio has no session. So every
+  request carries an HMAC-SHA256 over the message, keyed on `AUTH_SECRET` and
+  compared in constant time; without a valid signature the route renders an empty
+  document and explains nothing. It signs with Web Crypto rather than
+  `node:crypto`, because the module is reachable from `instrumentation.ts`, which
+  Next also compiles for the edge runtime, where a `node:` import fails the whole
+  build.
+- **cloudflared announces its own control plane on startup.** A naive regex match
+  on the tunnel output sent every call to `api.trycloudflare.com`, a host that
+  knows nothing about us. Now explicitly excluded, and pinned by a test.
+
+A Twilio **trial** account cannot send custom TwiML at all, so the app detects
+that and falls back to a hosted template: the phone still rings, it just does not
+say which event. Upgrading the account restores the spoken name with no code
+change.
+
+### Documentation
+
+`README.md` and `ARCHITECTURE.md` still described the v0.2 state — "there is no
+authentication", "Google/Outlook sync was removed in v0.2", a file tree with no
+`login/`, `calendar/` or `calls/` in it. Every one of those statements was false
+by the time this release shipped. Both documents have been rewritten against the
+code as it actually stands, including the limitations above.
+
+---
+
 ## v0.5 — a ghost on the calendar
 
 ### Deleting an event in Google left a copy behind
@@ -422,6 +544,11 @@ npm run dev
 ```
 
 ## What still needs work
+
+> **As of v0.5, items 1 and 4 are done** — calendar sync and sign-in both came
+> back, though not in the shape this list anticipated. See the v0.5 entry at the
+> top of this file. Item 3 was closed in v0.3 (the seed creates the HNSW index).
+> Item 2 still stands. The list is left as written for the record.
 
 Honest list, sorted by priority:
 
