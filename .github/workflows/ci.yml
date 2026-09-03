@@ -8,6 +8,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    env:
+      # Prisma requires DATABASE_URL even for `prisma generate` (client codegen only).
+      # Unit tests use the in-memory DB fallback, so this URL is never actually connected to.
+      DATABASE_URL: "postgresql://lifeos:lifeos@localhost:5432/lifeos?schema=public"
+      # next-auth requires AUTH_SECRET at typecheck/build time.
+      AUTH_SECRET: "ci-placeholder-secret-not-used-in-tests"
+      # Suppress the Vite native config loader warning from vitest.
+      VITE_CONFIG_NATIVE_IGNORE_WARNING: "true"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -16,10 +26,8 @@ jobs:
           node-version: 20
           cache: npm
 
+      # postinstall already runs `prisma generate || true`, so npm ci handles it.
       - run: npm ci
-
-      - name: Generate Prisma Client
-        run: npx prisma generate
 
       - name: Typecheck
         run: npm run typecheck
