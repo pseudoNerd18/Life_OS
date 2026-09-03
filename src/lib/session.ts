@@ -47,7 +47,7 @@ export async function currentUser(): Promise<CurrentUser> {
   }
 
   // Fallback: guest cookie (lifeos_uid). Mint a user row for the id if needed.
-  const jar = cookies();
+  const jar = await cookies();
   const life = jar.get("lifeos_uid")?.value;
   if (!life) throw new UnauthorizedError();
 
