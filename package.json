@@ -1,8 +1,8 @@
 {
   "name": "life-os",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "private": true,
-  "description": "AI-native Life OS — conversational assistant for tasks, goals, notes, and calendar. Local-first, no sign-in required.",
+  "description": "AI-native Life OS — conversational assistant for tasks, goals, notes, and calendar. Local-first inference, two-way Google Calendar sync, and reminder phone calls.",
   "scripts": {
     "dev": "next dev -p 3010",
     "kill": "bash scripts/kill-servers.sh",
