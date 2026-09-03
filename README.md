@@ -1,65 +1,77 @@
 # Life OS
 
-> An AI-native operating system for tasks, goals, notes, and calendar. Type or speak naturally — Life OS does the structure.
+> An AI-native personal operating system for tasks, goals, notes and calendar. Type or speak one ordinary sentence — Life OS works out the structure.
 
-Built around a simple idea: the user shouldn't translate intent into forms. They tell the assistant what's on their mind; the assistant figures out whether it's a task, a goal, a note, or a calendar event, fills in due dates, priorities, recurrence rules, and categories, and writes it to a real database. Voice works the same way — Whisper transcribes, the model extracts, the UI lets you review before commit.
+Built around a single idea: the user should not have to translate an intention into the tool's vocabulary before the tool will accept it. You say what is on your mind; the system decides whether it is a task, several tasks, a goal, a note or an instruction to change something that already exists, fills in the due date, priority, category and recurrence rule, and writes a real row to a real database. A goal stated in one line is decomposed into ordered milestones with scheduled tasks beneath them.
 
-The whole stack runs locally if you want it to. Gemma via Ollama for understanding, `faster-whisper-server` for voice, Postgres + pgvector for memory.
+Voice works the same way, without a press-to-talk button: it listens continuously, acts on each sentence as you finish it, and stops when you say "that'll be all".
+
+Every piece of inference runs on your own hardware by default — Gemma 3 through Ollama for understanding, faster-whisper for speech, Postgres with pgvector for memory. The default configuration makes no outbound AI request and costs nothing per capture.
 
 ---
 
 ## Quick start
 
+Two environment variables are required: `DATABASE_URL` and `AUTH_SECRET`. Everything else is optional, and each optional value's absence disables exactly one capability. There is no configuration in which the application fails to boot.
+
 ```bash
-# 1. Install deps
-npm install
+# 1. Install
+npm install                # postinstall runs `prisma generate`
 
-# 2. Configure — DATABASE_URL is the only required variable
+# 2. Configure
 cp .env.example .env
+npx auth secret            # generates AUTH_SECRET and writes it into .env
 
-# 3. Bring up Postgres (the only hard dependency)
+# 3. Database — Postgres 16 with pgvector
 docker compose up -d postgres
+npx prisma db push         # creates the schema and the vector/pgcrypto extensions
 
-# 4. Create the schema
-npx prisma db push
-
-# 5. Run
-npm run dev
+# 4. Run
+npm run dev                # http://localhost:3010
 ```
 
-Open `http://localhost:3010`. There is no sign-in — a guest account is minted
-on your first visit and stored in a cookie.
+Open the app, choose **Sign up**, and create an account with an email address and a password of at least eight characters. At this point everything works: with no model server running, a deterministic parser still handles dates, categories and recurrence.
+
+Set your timezone in **Settings → Profile** before capturing anything. Every relative date — "tomorrow evening", "this Friday at 5pm" — resolves in the timezone on your account, not your browser's.
 
 ### Optional: the local AI stack
 
-The app runs without either of these; extraction falls back to a deterministic
-parser and voice capture is simply unavailable.
+This is what makes capture feel intelligent rather than merely mechanical.
 
 ```bash
 docker compose up -d ollama whisper
-docker exec lifeos-ollama ollama pull gemma3            # or gemma3:1b for a laptop
-docker exec lifeos-ollama ollama pull nomic-embed-text  # embeddings for memory
+docker exec lifeos-ollama ollama pull gemma3            # or gemma3:1b on a laptop
+docker exec lifeos-ollama ollama pull nomic-embed-text  # 768-dim embeddings for memory
 ```
 
-Settings → AI health shows whether each one is reachable.
+**Settings → AI services** reports whether each one is reachable, and whether the configured model is actually pulled.
+
+### Optional: Google sign-in and Calendar
+
+These are two separate things, and confusing them is the usual source of failure.
+
+- **Signing in with Google** needs only `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. A client ID is public by design — Google Identity Services hands the browser a signed ID token, which is verified against Google's public keys. No secret is involved.
+- **Two-way calendar sync that outlives the current session** additionally needs `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, because Google only issues refresh tokens to the authorization-code flow.
+
+With just the public client ID you can still connect a calendar for the current browser session; the interface labels it as such. `npm run check:google` diagnoses the configuration. Full setup steps, including the two URL boxes people mix up, are in `.env.example`.
+
+### Optional: reminder phone calls
+
+Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM_NUMBER`, leave `TWILIO_TWIML_URL` empty, and install `cloudflared`. The server opens a quick tunnel at boot and fills the URL in itself. Then save your number on the Today page. Two minutes before a calendar event starts, the phone rings and speaks the event name.
 
 ### Optional: demo data
 
 ```bash
-npm run db:seed
+npm run db:seed            # seeds the most recently created account, or SEED_USER_ID=<id>
 ```
-
-Seeds tasks, a planned goal with milestones, notes, and calendar events into the
-**guest account you're currently browsing with** (the most recently created
-guest), so load the app in a browser first. Override with `SEED_USER_ID=<id>`.
 
 ### Try it
 
-Type into the assistant or Quick Capture:
-
-> "Remind me to go to the gym tomorrow evening"
-> "Help me prepare for GATE in 4 months"
+> "Remind me to submit the capstone report this Friday at 5pm"
 > "Take vitamin B12 every 3 days"
+> "Help me prepare for GATE in 4 months"
+> "Mark the gym task done"
+> "The previous note should say t-shirt idea, not teacher idea"
 
 ---
 
@@ -67,196 +79,205 @@ Type into the assistant or Quick Capture:
 
 ```
 src/
+├── middleware.ts                 # Auth gate. Everything except /, /login, /signup,
+│                                 #   /api/auth/* and the HMAC-signed /api/calls/twiml
+├── instrumentation.ts            # Boot hook: the once-a-minute reminder sweep + tunnel
+│
 ├── app/                          # Next.js 15 App Router
 │   ├── page.tsx                  # Landing
-│   ├── layout.tsx                # Root (fonts, theme, toast)
-│   ├── globals.css               # Design tokens
-│   ├── (app)/                    # App shell (no auth gate)
-│   │   ├── layout.tsx            # Sidebar + guest-mode banner
-│   │   ├── dashboard/            # Briefing + today + goals + events
-│   │   ├── assistant/            # Conversational chat + voice
-│   │   ├── calendar/             # 14-day combined view
-│   │   ├── notes/                # TipTap rich editor
-│   │   ├── goals/                # Goal list + milestone view
-│   │   ├── settings/             # Profile, AI health, calendar
-│   │   └── onboarding/           # 3-step welcome flow
-│   └── api/
-│       ├── ai/
-│       │   ├── chat/             # Main conversational endpoint
-│       │   ├── extract/          # Voice preview pipeline
-│       │   ├── plan-goal/        # Generate milestones+tasks
-│       │   ├── briefing/         # Morning briefing
-│       │   └── health/{ollama,whisper}/
-│       ├── voice/transcribe/     # Whisper gateway
-│       ├── tasks/                # CRUD + [id]
-│       ├── notes/                # CRUD + [id]
-│       ├── goals/                # CRUD + [id]
-│       ├── events/               # Combined task+event feed
-│       └── me/                   # User profile
+│   ├── login/ · signup/          # Email+password and Google sign-in
+│   ├── (app)/                    # Authenticated shell
+│   │   ├── dashboard/            # Briefing, quick capture, today, calendar, goals
+│   │   ├── assistant/            # Conversational chat + hands-free voice
+│   │   ├── calendar/             # Fortnight strip and month grid
+│   │   ├── notes/                # BlockNote editor with images and backlinks
+│   │   ├── goals/                # Goal list and milestone detail
+│   │   ├── settings/             # Profile, connected calendars, AI health, account
+│   │   └── onboarding/
+│   └── api/                      # 28 route handlers
+│       ├── auth/[...nextauth]/   #   Auth.js handler
+│       ├── auth/signup/          #   Registration (Auth.js has none for credentials)
+│       ├── ai/                   #   chat · extract · plan-goal · briefing · health/*
+│       ├── calendar/             #   google/{connect,callback,session} · sync
+│       │                         #   events · events/[id] · accounts/[id]
+│       ├── calls/twiml/          #   Signed TwiML spoken by the reminder call
+│       ├── voice/transcribe/     #   Whisper gateway
+│       ├── tasks/ · goals/ · notes/ · notes/images/ · events/ · me/ · undo/
 │
 ├── components/
-│   ├── ui/                       # shadcn-style primitives
-│   ├── layout/                   # Sidebar, Providers, Onboarding, Settings
-│   ├── landing/                  # (reserved — landing inlined for now)
-│   ├── assistant/                # Chat + composer
-│   ├── voice/                    # MediaRecorder + meter
-│   ├── tasks/                    # TaskRow
-│   ├── notes/                    # Workspace + TipTap editor
-│   ├── calendar/                 # CalendarView
-│   ├── goals/                    # NewGoal, GoalDetail
-│   └── dashboard/                # Briefing, QuickCapture, TodayTasks, etc.
+│   ├── ui/ · layout/ · landing/  # Primitives, shell, marketing page
+│   ├── auth/                     # Sign-in form, Google button, calendar grant
+│   ├── assistant/ · voice/       # Chat, hands-free dictation, recorder
+│   ├── calendar/                 # Fortnight, month, event dialog, connected accounts
+│   ├── dashboard/                # Briefing, quick capture, today, reminder calls
+│   ├── goals/ · notes/ · tasks/
 │
 ├── lib/
+│   ├── auth.ts                   # Auth.js v5: Google ID token + email/password
+│   ├── auth/google-id-token.ts   # Verifies a GIS token against Google's public keys
+│   ├── session.ts                # currentUser() — the one place "who is this" is read
 │   ├── db.ts                     # Prisma singleton, in-memory fallback
-│   ├── session.ts                # Guest-by-default current user
-│   ├── env.ts                    # Capability detection (never throws)
-│   ├── time.ts                   # Timezone-correct day boundaries
-│   ├── queries.ts                # Query shapes shared by RSC + API routes
-│   ├── utils.ts                  # cn(), date formatters
-│   ├── validation.ts             # Zod schemas
+│   ├── env.ts                    # Capability detection. Never throws
+│   ├── time.ts                   # Timezone-correct day boundaries and parsing
+│   ├── queries.ts                # Query shapes shared by server components and routes
+│   ├── validation.ts             # Zod schemas — strict, at the HTTP boundary
 │   ├── ai/
-│   │   ├── ollama.ts             # Ollama client
-│   │   ├── prompts.ts            # Extraction, planner, briefing system prompts
-│   │   ├── extractor.ts          # Gemma + chrono-node date fallback
-│   │   ├── planner.ts            # Goal → milestones + tasks
-│   │   ├── memory.ts             # pgvector raw-SQL retrieval
-│   │   └── router.ts             # Top-level orchestrator
-│   ├── voice/whisper.ts          # OpenAI-compatible Whisper gateway
-│   └── server/
-│       ├── actions.ts            # DB mutations the AI router calls
-│       └── ratelimit.ts          # In-memory rate limiter
+│   │   ├── router.ts             #   recall → extract → act → remember → reply
+│   │   ├── extractor.ts          #   Gemma + a deterministic parser, reconciled
+│   │   ├── fallback-parser.ts    #   Runs with no model at all
+│   │   ├── schema.ts             #   Lenient coercion, at the model boundary
+│   │   ├── planner.ts · prompts.ts · memory.ts · ollama.ts
+│   ├── calendar/
+│   │   ├── google.ts · google-tasks.ts   # Calendar v3 and Tasks v1, via fetch
+│   │   ├── sync.ts               #   pull → pullTasks → push → reap
+│   │   ├── reconcile.ts          #   Pure conflict arbitration, unit-tested
+│   │   └── tokens.ts · link.ts
+│   ├── calls/
+│   │   ├── reminders.ts          #   The sweep. Claims each event before dialling
+│   │   ├── twilio.ts · sign.ts · tunnel.ts
+│   ├── voice/
+│   │   ├── utterance.ts          #   Segmentation as a pure state machine
+│   │   └── whisper.ts · use-dictation.ts
+│   ├── server/
+│   │   ├── actions.ts            #   The only writer
+│   │   ├── resolve.ts            #   "the gym one" → a row, by explainable scoring
+│   │   └── ratelimit.ts
+│   └── __tests__/                # 196 tests in 16 suites
 │
-├── stores/                       # Zustand
-│   ├── assistant.ts              # Chat + voice state
-│   ├── tasks.ts                  # Optimistic task store
-│   └── ui.ts                     # Sidebar, command palette
-│
-└── middleware.ts                 # Primes the guest cookie; blocks nothing
+└── stores/                       # Zustand: assistant, tasks, calendar-events, capture, ui
 
 prisma/
-├── schema.prisma                 # 18 models, pgvector + pgcrypto extensions
-└── seed.ts                       # Demo tasks, goals, notes, events
+├── schema.prisma                 # 17 models, 9 enums, pgvector + pgcrypto
+└── seed.ts · seed-data.ts
 
 scripts/
-└── smoke.mjs                     # End-to-end HTTP smoke test
+├── test-calendar-sync.ts         # 35 integration checks against a stand-in Google
+├── mock-google.ts                # That stand-in: sync tokens, pagination, tombstones
+├── check-google.mjs              # Diagnoses Google configuration
+├── smoke.mjs                     # HTTP smoke test — see "Known limitations"
+└── e2e-notes.mjs · kill-servers.sh
 
 docker-compose.yml                # postgres+pgvector, ollama, whisper
-Dockerfile                        # Multi-stage Next.js image
+Dockerfile                        # Multi-stage production image
 ```
 
 ---
 
 ## Stack
 
-| Layer       | Choice                                                                          |
-| ----------- | ------------------------------------------------------------------------------- |
-| Framework   | Next.js 15 (App Router, Server Components, Server Actions)                      |
-| Language    | TypeScript strict                                                               |
-| Database    | Postgres 16 + pgvector + pgcrypto                                               |
-| ORM         | Prisma 5                                                                        |
-| Auth        | None — local-first. A cookie-scoped guest user is created on first visit          |
-| LLM         | Gemma via Ollama (local), model name configurable. No model? A deterministic chrono-node parser handles dates, recurrence and categories |
-| Embeddings  | `nomic-embed-text` (768-dim) via Ollama, stored as `vector(768)` in `Memory`    |
-| Voice       | `faster-whisper-server` (local, OpenAI-compatible)                              |
-| Calendar    | Internal `CalendarEvent` model only. Google/Outlook sync was removed in v0.2 with the auth layer — see CHANGES.md |
-| State       | Zustand                                                                         |
-| Editor      | TipTap with StarterKit, TaskList, Link, Placeholder                             |
-| Styling     | Tailwind CSS + custom design tokens (no shadcn install step — primitives in-tree) |
-| Motion      | Framer Motion                                                                   |
-| Validation  | Zod                                                                             |
-| Dates       | date-fns + chrono-node + rrule                                                  |
-| Rate limit  | In-memory only, per-process (see the note in `lib/server/ratelimit.ts`)          |
+| Layer | Choice |
+| --- | --- |
+| Framework | Next.js 15 App Router, React Server Components, Server Actions |
+| Language | TypeScript, strict mode |
+| Database | PostgreSQL 16 with pgvector and pgcrypto |
+| ORM | Prisma 5 — 17 models, 9 enums |
+| Auth | Auth.js v5 (NextAuth). Email/password with bcrypt cost 12, and Google via a verified Identity Services ID token. JWT sessions |
+| LLM | Gemma 3 through Ollama, JSON mode, validated by Zod. With no model, a deterministic chrono-node parser handles dates, recurrence and categories |
+| Embeddings | `nomic-embed-text`, 768 dimensions, stored as `vector(768)` and queried by raw cosine SQL |
+| Voice | `faster-whisper-server`, behind an OpenAI-compatible contract |
+| Calendar | Google Calendar v3 and Google Tasks v1, over `fetch` — no `googleapis` dependency |
+| Telephony | Twilio Programmable Voice, over an HMAC-signed TwiML webhook |
+| State | Zustand, with optimistic patch/revert |
+| Editor | BlockNote |
+| Styling | Tailwind CSS with in-tree primitives and custom design tokens |
+| Motion | Framer Motion |
+| Dates | date-fns, chrono-node, rrule |
 
-See `ARCHITECTURE.md` for the why.
+See `ARCHITECTURE.md` for why each of these, and `CHANGES.md` for the defects found along the way.
 
 ---
 
 ## Development
 
 ```bash
-npm run dev          # Next dev server
-npm run db:studio    # Prisma Studio (data browser)
-npm run db:migrate   # Create + apply migration
-npm run db:push      # Push schema (no migration file)
-npm run typecheck    # tsc --noEmit
-npm run lint
-npm run db:seed      # demo data into the current guest account
-npm run smoke        # end-to-end HTTP smoke test against a running dev server
+npm run dev            # dev server on :3010
+npm run build          # prisma generate && next build
+npm run typecheck      # tsc --noEmit
+npm run lint           # eslint
+npm run test:unit      # 196 tests in 16 suites
+npm run test           # typecheck + unit
+npm run test:calendar  # 35 integration checks (needs DATABASE_URL + Postgres)
+npm run check:google   # diagnoses the Google client configuration
+npm run db:push        # push schema without a migration file
+npm run db:migrate     # create and apply a migration
+npm run db:studio      # Prisma Studio
+npm run db:seed        # demo data
 ```
 
-### Smoke test
+### Testing
 
-`npm run smoke` drives a running server over HTTP: every page, full CRUD on
-tasks/goals/notes, cross-guest isolation, the natural-language pipeline, the
-briefing's timezone handling, and graceful degradation when Ollama and Whisper
-are absent. Ollama/Whisper checks report as skipped rather than failing.
+| Command | Covers | Result |
+| --- | --- | --- |
+| `npm run typecheck` | The whole codebase | Clean |
+| `npm run lint` | The whole codebase | Clean |
+| `npm run test:unit` | Utterance timing, sign-off matching, target resolution, extraction coercion, RRULE normalization, timezone arithmetic, conflict arbitration, Google ID token verification, reminder claiming, TwiML signing | 196 pass |
+| `npm run test:calendar` | The real sync engine against a stand-in Google API and a real Postgres — sync tokens, pagination, tombstones, echo suppression, conflict arbitration, provenance, 410 recovery, token refresh | 35 pass |
 
-```bash
-npm run dev
-npm run smoke                                  # or BASE_URL=http://localhost:3010 npm run smoke
-```
+`npm run test:calendar` creates everything under a throwaway user and removes it again in a `finally`, so it is safe against a development database. It exits with a skip message if no Postgres is configured.
 
-### Adding/changing models
+### Known limitations of the test suite
 
-Set `OLLAMA_MODEL=gemma3:27b` (or `llama3.2`, `qwen2.5:14b`, etc.) and pull it inside the Ollama container:
+Stated here rather than left to be discovered.
 
-```bash
-docker exec lifeos-ollama ollama pull gemma3:27b
-```
-
-The extractor uses JSON mode where available and falls back to substring-extraction if the model adds prose around the JSON.
-
-### Voice
-
-Default is the local `faster-whisper-server` from docker-compose, set to `small` for CPU. For GPU + better quality, set `WHISPER__MODEL=Systran/faster-whisper-large-v3` and uncomment the GPU section. To switch to OpenAI: `WHISPER_MODE=openai`.
-
-### Calendar
-
-The `CalendarEvent` model, the dashboard widget and the 14-day view all work,
-but nothing syncs into them yet: Google/Outlook OAuth was removed in v0.2 along
-with the auth layer. `CalendarAccount` and the provider enum are still in the
-schema, so re-adding a provider is a self-contained job — see the top of
-CHANGES.md → "What still needs work".
+- **The HTTP smoke harness is obsolete (DEF-02).** `scripts/smoke.mjs` predates the authentication layer and does not sign in, so its checks now return 401. They are harness failures, not product defects — and incidentally evidence that the auth gate works. Recovering it means teaching it to sign in first.
+- **There is no component test layer.** Interface behaviour was validated by driving a real browser, which is real evidence but is not repeatable in CI. This is the largest single gap.
+- **Line coverage is not measured.** The suite targets identified risk rather than a coverage target. The figures above are test counts, not coverage percentages.
+- **Extraction accuracy is observed, not benchmarked.** No labelled evaluation set exists yet.
+- **Google is tested against a stand-in.** The mock implements the API surface the engine uses, but cannot reproduce undocumented live behaviour, quota effects or latency. Google Tasks has unit coverage only — the mock does not implement `/tasks/v1`.
+- **Load and concurrency are untested.**
 
 ---
 
 ## Deployment
 
-The Next.js app is a single container. The reference deploy is:
-
-- **App**: Cloud Run / Fly.io / Railway / Render / your VPS
-- **Database**: Neon, Supabase Postgres, or any managed Postgres with the `vector` extension
-- **Ollama**: A box with a GPU (preferably) — same network as the app. For higher throughput consider vLLM or a hosted gateway.
-- **Whisper**: same — `faster-whisper-server` is fine on CPU for occasional captures, GPU for scale.
+The app is a single container.
 
 ```bash
 docker build -t lifeos .
 docker run --env-file .env -p 3010:3010 lifeos
 ```
 
-Set `APP_URL` to your production URL.
+- **App** — Cloud Run, Fly.io, Railway, Render or your own VPS. Set `APP_URL` and `AUTH_URL` to the production URL.
+- **Database** — Neon, Supabase, or any managed Postgres with the `vector` extension.
+- **Ollama** — a machine with a GPU, on the same network. For higher throughput consider vLLM or a hosted gateway.
+- **Whisper** — `faster-whisper-server` is fine on CPU for occasional captures; GPU for scale.
 
-Two things to know before exposing this to a network: there is **no
-authentication** — anyone holding a `lifeos_uid` cookie value is that user — and
-rate limiting is per-process in-memory, so it does not hold across replicas.
+### Run one instance
+
+Two things are per-process and do not hold across replicas:
+
+- **Rate limiting** is an in-memory `Map`. It does not survive a restart and is not shared between instances.
+- **The reminder sweep** runs on an interval inside the server process (`src/instrumentation.ts`). Each instance would start its own tunnel and its own sweep. The sweep itself is concurrency-safe — it claims each event in the database with a compare-and-swap before dialling — so the fix is to move the body behind an authorised route and drive it from a real scheduler.
+
+---
+
+## Security
+
+- Every route except `/`, `/login`, `/signup`, `/api/auth/*` and `/api/calls/twiml` requires a session. Pages redirect to `/login` with a `callbackUrl`; API routes return 401.
+- Passwords are stored only as bcrypt hashes at cost 12. Sign-in failures are indistinguishable from one another, and a duplicate signup returns the same message whether the existing account has a password or is Google-only, so neither endpoint enumerates accounts.
+- A Google ID token is verified against Google's published keys, with the audience and nonce checked, and unverified email addresses refused.
+- Every Prisma query filters by `userId`, and every `[id]` route resolves through `findFirst({ where: { id, userId } })` — returning **404, not 403**, so the existence of another user's row does not leak.
+- `/api/calls/twiml` is world-reachable by necessity: Twilio has no session. Every request must carry an HMAC-SHA256 over the spoken message, keyed on `AUTH_SECRET` and compared in constant time. Without a valid signature the route renders an empty document.
+- Google calendar consent is separable from identity — provider tokens live on `CalendarAccount`, so calendar access can be revoked without touching the account.
+- Rate limits are cost-tiered: goal planning 5/min, calendar sync 10/min, briefing 10/min, transcription 12/min, chat and extraction 30/min.
+- No `dangerouslySetInnerHTML` anywhere.
+
+**Known:** provider access and refresh tokens are stored in plaintext `text` columns. Encrypting them at rest is the first item below.
 
 ---
 
 ## Roadmap
 
-- [ ] Re-add calendar sync against the new session layer (Google first, then Outlook)
-- [ ] Background job queue (BullMQ or pg-boss) — move goal planning + briefing off the request thread
-- [ ] WebSocket / SSE channel for cross-device task sync
-- [ ] Push notifications via Web Push + service worker
-- [ ] Vector-search-powered "ask my notes" panel
-- [ ] Smart rescheduling — when a task is missed, the planner shifts subsequent dependents
-- [ ] Mobile-first PWA shell + share target (capture from iOS share sheet)
-- [ ] Optional sign-in, upgrading a guest in place (`User.isGuest` already models it)
-- [ ] Upgrade to Next 16 — three moderate advisories (postcss, sharp) are pinned behind that major
-- [ ] Unit tests for `lib/time.ts` and the fallback parser; `npm run smoke` covers the HTTP surface only
+- [ ] Encrypt `CalendarAccount` tokens at rest
+- [ ] Teach `scripts/smoke.mjs` to sign in, and restore it to CI (DEF-02)
+- [ ] A component test layer, and coverage instrumentation
+- [ ] A labelled evaluation set for extraction accuracy
+- [ ] Move goal planning and briefing generation onto a job queue (pg-boss or BullMQ)
+- [ ] Drive the reminder sweep from a real scheduler so the app can run more than one instance
+- [ ] Wire semantic recall into the conversational reply and into a "search my notes" panel — the embeddings are written and queryable, but the retrieval result is not yet used
+- [ ] Answer `QUERY` intents from the database rather than from the model
+- [ ] Outlook calendar, against the existing `CalendarProvider` enum
+- [ ] Push notifications via Web Push, as a quieter alternative to a phone call
+- [ ] Mobile-first PWA shell with a share target
 
 ---
-
-## License
-
-MIT.
